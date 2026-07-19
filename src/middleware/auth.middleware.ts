@@ -1,10 +1,9 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { env } from "../config/env";
-import { User, IUser } from "../models/User";
+import mongoose from "mongoose";
 
 export interface AuthenticatedRequest extends Request {
-  user?: IUser;
+  user?: any;
 }
 
 export const protect = async (
@@ -32,8 +31,9 @@ export const protect = async (
     }
 
     try {
-      const decoded = jwt.verify(token, env.JWT_SECRET) as { id: string };
+      const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { id: string };
 
+      const User = mongoose.model("User");
       const user = await User.findById(decoded.id).select("-password");
       if (!user) {
         res.status(401).json({
@@ -79,7 +79,8 @@ export const optionalProtect = async (
     }
 
     try {
-      const decoded = jwt.verify(token, env.JWT_SECRET) as { id: string };
+      const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as { id: string };
+      const User = mongoose.model("User");
       const user = await User.findById(decoded.id).select("-password");
       if (user) {
         req.user = user;

@@ -2,3 +2,4 @@
 vercel.json
 node_modules
 dist
+.vercel

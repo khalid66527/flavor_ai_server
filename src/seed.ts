@@ -1,7 +1,5 @@
 import mongoose from "mongoose";
-import { User } from "./models/User";
-import { Recipe } from "./models/Recipe";
-import { env } from "./config/env";
+import { User, Recipe, env } from "./app";
 
 const recipesData = [
   {
