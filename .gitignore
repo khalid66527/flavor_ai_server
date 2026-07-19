@@ -1,0 +1,4 @@
+.env
+vercel.json
+node_modules
+dist
