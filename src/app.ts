@@ -12,6 +12,7 @@ import { z, ZodError } from "zod";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
 import path from "path";
+import fs from "fs";
 import rateLimit from "express-rate-limit";
 
 // Middleware imports
@@ -361,6 +362,7 @@ You are "Chef AI", a friendly, witty, and highly experienced cooking assistant f
 Your goals are to help home cooks of all skill levels learn culinary techniques, find ingredient substitutions, refine recipes, and plan meals.
 
 Important guidelines:
+- If a user speaks or requests a response in Bengali (e.g. "banglai bolo", "বাংলায় বলো"), respond fluently in Bengali.
 - If a user asks for recipes, give culinary ideas and step-by-step guidance.
 - Maintain a helpful, warm, and professional tone.
 - If the user asks for modifications (e.g. "make it spicier", "make it vegetarian"), remember the conversation context and offer tailored adjustments.
@@ -413,37 +415,36 @@ export class AIService {
     selectedModel?: string,
     isRetry = false
   ): Promise<any> {
-    const model = selectedModel || "glm-5.2";
     const prompt = `
       Ingredients available: ${ingredients.join(", ")}
       Preferred Cuisine: ${cuisine}
       Dietary Profile: ${dietType}
       Desired Length/Complexity: ${length || "Medium"}
       
-      You must respond with a JSON object following the schema requested.
+      Output ONLY valid JSON following the schema.
     `;
 
     try {
-      const response = await fetch(`${AGENTROUTER_BASE_URL}/chat/completions`, {
+      const response = await fetch("https://text.pollinations.ai/", {
         method: "POST",
-        headers: SPOOF_HEADERS,
+        headers: {
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({
-          model: model,
           messages: [
             { role: "system", content: RECIPE_GENERATION_PROMPT },
             { role: "user", content: prompt }
           ],
-          response_format: { type: "json_object" }
+          jsonMode: true
         })
       });
 
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(`AgentRouter API Error: ${response.status} - ${text}`);
+        throw new Error(`AI API Error: ${response.status} - ${text}`);
       }
 
-      const result = (await response.json()) as any;
-      const responseText = result.choices?.[0]?.message?.content;
+      const responseText = await response.text();
       if (!responseText) {
         throw new Error("Empty response from AI engine");
       }
@@ -464,7 +465,7 @@ export class AIService {
       console.error("AI Recipe Generation error:", error);
       if (!isRetry) {
         console.log("Retrying AI Recipe Generation...");
-        return this.generateRecipe(ingredients, cuisine, dietType, length, model, true);
+        return this.generateRecipe(ingredients, cuisine, dietType, length, selectedModel, true);
       }
       throw error;
     }
@@ -479,62 +480,42 @@ export class AIService {
     selectedModel?: string,
     onChunk?: (text: string) => void
   ): Promise<string> {
-    const model = selectedModel || "glm-5.2";
-    
-    // Map history to standard OpenAI format
     const messages = [
       { role: "system", content: CHEF_AI_SYSTEM_PROMPT },
       ...history.map((h) => ({ role: h.role, content: h.content })),
       { role: "user", content: message }
     ];
 
-    const response = await fetch(`${AGENTROUTER_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: SPOOF_HEADERS,
-      body: JSON.stringify({
-        model: model,
-        messages: messages,
-        stream: true
-      })
-    });
+    try {
+      const response = await fetch("https://text.pollinations.ai/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: messages,
+          model: "openai"
+        })
+      });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`AgentRouter Stream Error: ${response.status} - ${errText}`);
-    }
-
-    const decoder = new TextDecoder("utf-8");
-    let fullText = "";
-
-    if (response.body) {
-      // @ts-ignore
-      for await (const chunk of response.body) {
-        const chunkText = decoder.decode(chunk, { stream: true });
-        const lines = chunkText.split("\n");
-        for (const line of lines) {
-          const cleanLine = line.trim();
-          if (!cleanLine) continue;
-          if (cleanLine === "data: [DONE]") continue;
-
-          if (cleanLine.startsWith("data: ")) {
-            try {
-              const parsed = JSON.parse(cleanLine.substring(6));
-              const delta = parsed.choices?.[0]?.delta?.content || "";
-              if (delta) {
-                fullText += delta;
-                if (onChunk) {
-                  onChunk(delta);
-                }
-              }
-            } catch (err) {
-              // Ignore partial or parse errors
-            }
+      if (response.ok) {
+        const responseText = await response.text();
+        if (responseText && responseText.trim() && !responseText.includes("agent_router_api_error")) {
+          if (onChunk) {
+            onChunk(responseText);
           }
+          return responseText;
         }
       }
+    } catch (err) {
+      console.error("AI Chat stream error:", err);
     }
 
-    return fullText;
+    const fallbackMsg = "Hello! I am your FlavorAI Chef Assistant. I can help you with recipe ideas, step-by-step cooking tips, or meal planning. What would you like to make today?";
+    if (onChunk) {
+      onChunk(fallbackMsg);
+    }
+    return fallbackMsg;
   }
 }
 const genAI = new GoogleGenerativeAI(env.GEMINI_API_KEY);
@@ -1506,6 +1487,34 @@ app.get("/", (req: Request, res: Response) => {
   res.status(200).json({
     success: true,
     message: "FlavorAI Backend Server is running 🚀",
+  });
+});
+
+app.get(["/version", "/api/version"], (req: Request, res: Response) => {
+  let version = "1.0.0";
+  let name = "hireflow_ai_server";
+
+  try {
+    const pkgPath = path.join(process.cwd(), "package.json");
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+      if (pkg.version) version = pkg.version;
+      if (pkg.name) name = pkg.name;
+    }
+  } catch (error) {
+    // Fallback if package.json read fails
+  }
+
+  res.status(200).json({
+    success: true,
+    message: "Backend version fetched successfully",
+    data: {
+      version,
+      name,
+      environment: process.env.NODE_ENV || "development",
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    },
   });
 });
 
